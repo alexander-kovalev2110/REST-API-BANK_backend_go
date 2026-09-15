@@ -18,7 +18,10 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load()
+	// ==========================================
+	// 1. Load Configuration & Environment Variables
+	// ==========================================
+	_ = godotenv.Load() // Load environment variables from .env file (if present)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -35,27 +38,40 @@ func main() {
 		jwtSecret = "super-secret-jwt-key"
 	}
 
+	// ==========================================
+	// 2. Initialize & Ping Database Connection
+	// ==========================================
 	db, err := sql.Open("mysql", dbURL)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() // Close database connection when the application exits
 
 	if err := db.Ping(); err != nil {
 		log.Printf("Warning: Database ping failed (%v). Server will start, but database requests may fail until MySQL is up.", err)
 	}
 
+	// ==========================================
+	// 3. Dependency Injection (Clean Architecture)
+	// ==========================================
+	// 3.1. Create Repositories (Data Access Layer)
 	customerRepo := mysql.NewCustomerRepository(db)
 	transactionRepo := mysql.NewTransactionRepository(db)
 
+	// 3.2. Inject Repositories into UseCases (Business Logic Layer)
 	customerUC := usecase.NewCustomerUseCase(customerRepo, jwtSecret)
 	transactionUC := usecase.NewTransactionUseCase(transactionRepo)
 
+	// 3.3. Inject UseCases into Handlers (HTTP Transport Layer)
 	authHandler := handler.NewAuthHandler(customerUC)
 	txHandler := handler.NewTransactionHandler(transactionUC)
 
+	// ==========================================
+	// 4. Initialize HTTP Router & Middleware
+	// ==========================================
 	r := chi.NewRouter()
 
+	// CORS Middleware: configure headers for cross-origin requests
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -68,18 +84,24 @@ func main() {
 			next.ServeHTTP(w, r)
 		})
 	})
-	r.Use(chiMiddleware.Logger)
-	r.Use(chiMiddleware.Recoverer)
+	r.Use(chiMiddleware.Logger)    // Log incoming HTTP requests
+	r.Use(chiMiddleware.Recoverer) // Recover from panics to prevent server crashes
 
+	// ==========================================
+	// 5. Define HTTP Routes
+	// ==========================================
+	// Health check endpoint
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok","message":"REST API BANK backend is running"}`))
 	})
 
+	// Public authentication routes
 	r.Post("/customers/register", authHandler.Register)
 	r.Post("/customers/login", authHandler.Login)
 
+	// Protected routes (require valid JWT token)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.JWTMiddleware(jwtSecret))
 
@@ -90,6 +112,9 @@ func main() {
 		r.Delete("/transactions/{transactionId}", txHandler.Delete)
 	})
 
+	// ==========================================
+	// 6. Start HTTP Server
+	// ==========================================
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("Server starting on http://localhost%s", addr)
 	if err := http.ListenAndServe(addr, r); err != nil {
